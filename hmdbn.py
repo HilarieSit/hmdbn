@@ -11,96 +11,98 @@ class node:
         self.parents = parents               # parent nodes/graphs
         self.theta_i = theta_i               # conditional probabilities of induced/repressed state
 
-def putative_hidden_graphs(node_i, ri):
-    """ return list of graphs with all parent combinations and observation combinations """
-    all_graphs, combinations = [], []
-    node_parents = node_i.parents
-    gene = node_i.gene
-
+def putative_hidden_graphs(gene, node_parents, ri):
+    """ return list of graphs with all parent combinations, corresponding possible parent emissions & dict for tracking combinations """
+    configs, configs_combos = [], []
     # get powerset of parents
     for r in range(0, len(node_parents)+1):
-        for combination in itertools.combinations(node_parents, r):
-            config_parents = list(combination)
-            new_network = node(gene, config_parents, theta_i=None)
-            all_graphs.append(new_network)
+        for config_parents in itertools.combinations(node_parents, r):
+            new_network = node(gene, list(config_parents), theta_i=None)
+            configs.append(new_network)
 
             # put combination of parent states in list corresponding to all_graphs
-            combo_values = [list(vals) for vals in itertools.combinations(ri, len(config_parents))]
-            combinations.append(combo_values)
+            all_parent_combos = [list(vals) for vals in itertools.product(ri, repeat=len(config_parents))]
+            configs_combos.append(all_parent_combos)
 
-    return all_graphs, combinations
+    return configs, configs_combos
 
-def initialize_prob_dicts(config_combos, initialization_prob, timeseries, theta_cond):
+def initialize_prob_dicts(config_combos, Ri):
     """ initialize init/trans/emiss prob dicts corresponding to configs """
     # collection.defaultdict(dict) for initializing dict of dicts   
     init_probs = collections.defaultdict(dict)
     trans_probs = collections.defaultdict(dict)   
     emiss_probs = collections.defaultdict(lambda: collections.defaultdict(dict)) 
-    print('hi')
+    initialization = 1/len(config_combos)
+
     for config_id, combinations in enumerate(config_combos):
-        print(config_id)
-        init_probs[config_id] = np.log(initialization_prob)
+        init_probs[config_id] = np.log(initialization)
         for config_id2, _ in enumerate(config_combos):
-            trans_probs[config_id][config_id2] = np.log(initialization_prob)
-        # initialize emiss then fill in
-        for gene_emiss in range(2):
-            # print(gene_emiss)
+            trans_probs[config_id][config_id2] = np.log(initialization)
+        # initialize emiss with zeros then fill in using calculate_theta
+        for gene_emiss in range(Ri):
             for parent_emiss in combinations:
-                # print(parent_emiss)
                 emiss_probs[config_id][gene_emiss][str(parent_emiss)] = 0  
-    # print(emiss_probs)
-    # emiss_probs = calculate_emiss_probs(config_combos, theta_cond, emiss_probs) 
+
+    print(emiss_probs)
+                    
     return trans_probs, emiss_probs, init_probs
 
-def update_probs(probs, fb_output, configs, current_obs, timeseries):
+def update_probs(probs, fb_output, configs, configs_combos, current_obs, timeseries):
     n_configs = len(configs)
+    T = len(current_obs)
     trans_probs, emiss_probs, init_probs = probs
     F, B, P = fb_output
 
     # calculate pi (init_probs)
-    pi_num = F[0,:] 
+    pi_num = F[:,0] 
     pi_denom = sumLogProbsFunc(np.hsplit(pi_num, n_configs))
     pi = pi_num - pi_denom
     for h, config in enumerate(configs): 
         init_probs[config] = pi[h]
 
     # calculate A (trans_probs)
-    for t in range(1, len(current_obs)):
+    for t in range(len(current_obs)-1):
         for q, config in enumerate(configs):
-            A_denom = sumLogProbsFunc(np.hsplit(F[q,t], n_configs))
+            A_denom = sumLogProbsFunc(np.hsplit(F[q,:], T))
             for next_q, config2 in enumerate(configs): 
-                # calculate numerator 
-                A_num = F[q,t]+trans_probs[config][config2]+emiss_probs[config2][current_obs[t+1]]+B[next_q,t+1]
+                # figure out parent observations for emiss probs
+                conf2_parents = config2.parents
+                back_parent_obs = str([timeseries.get(parent.gene)[t+1] for parent in conf2_parents])
+
+                 # calculate numerator 
+                A_num = F[q,t]+trans_probs[q][next_q]+emiss_probs[next_q][current_obs[t+1]][back_parent_obs]+B[next_q,t+1]
                 A = A_num - A_denom
                 if t == 1:
                     trans_probs[config][config2] = A
                 else:
-                    trans_probs[config][config2] = sumLogProbs(trans_probs[config][config2], A)
+                    trans_probs[config][config2] = sumLogProbs(trans_probs[q][next_q], A)
 
     # calculate theta & emiss_probs
-    theta_cond = calculate_theta(current_obs, timeseries, configs, P)
-    emiss_probs = calculate_emiss_probs(configs, theta_cond, emiss_probs) 
+    theta_cond, emiss_probs = calculate_theta(current_obs, timeseries, configs, configs_combos, P, emiss_probs)
+    print(emiss_probs)
     probs = (trans_probs, emiss_probs, init_probs)
 
     # forward backward algorithm
     fb_output, likelihood = forward_backward(current_obs, probs)
     return probs, theta_cond, fb_output, likelihood
 
-def calculate_theta(current_obs, timeseries, configs_zip, P):
+def calculate_theta(current_obs, timeseries, configs, configs_combos, P, emiss_probs):
     """ calculates conditional probabilities of X given each config """
     T = len(current_obs)
     Ri = 2
     theta_cond = []
-    for h, (config, combinations) in enumerate(configs_zip):
+    for config_id, config in enumerate(configs):
         # figure out possible variations of parent set
         conf_parents = config.parents
         all_parent_obs = [timeseries.get(parent.gene) for parent in conf_parents]
+        combinations = configs_combos[config_id]
         
         if conf_parents:
             # e.g. chi has four possibilities if one parent: 0-0, 0-1, 1-0, 1-1
             chi_dict = {}
             for chi_index, combination in enumerate(combinations):
                 chi_dict[str(list(combination))] = chi_index
+
             Gi = len(chi_dict)                                  # number of discrete states of parents
             theta_num = np.zeros((Ri, Gi))
 
@@ -111,13 +113,20 @@ def calculate_theta(current_obs, timeseries, configs_zip, P):
                 chi_index = chi_dict.get(str(parent_vals))
 
                 # calculate theta (do all i,jk at once)
-                theta_num[current_val, chi_index] += P[t,h]
+                theta_num[current_val, chi_index] += P[config_id, t]
 
             theta_num_sum = sumLogProbsFunc(list(np.vsplit(theta_num, Ri)))
             theta_denom = np.tile(theta_num_sum, (Ri, 1))
             # print(np.exp(theta_num - theta_denom))
             # print(config)
-            theta_cond.append(np.exp(theta_num - theta_denom))
+            theta_matrix = np.exp(theta_num - theta_denom)
+            theta_cond.append(theta_matrix)
+
+            print(theta_matrix)
+            # fill in emiss_probs
+            for gene_emiss in range(Ri):
+                for parent_emiss in combinations:
+                    emiss_probs[config_id][gene_emiss][str(parent_emiss)] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]
             
         else:
             # something is wrong here
@@ -126,22 +135,27 @@ def calculate_theta(current_obs, timeseries, configs_zip, P):
                 current_val = current_obs[t]
                 theta_array[current_val, t] = 1
             theta_cond.append(theta_array)
+            #emiss_probs[config_id][gene_emiss]['No_parents'] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]
+
+            # emiss[config_id][gene_emiss]['[]'] = theta
 
     return theta_cond, emiss_probs
 
-def calculate_emiss_probs(config_combos, theta_cond, emiss_probs):
-    # theta is a list of matrices
-    for config_id, theta_matrix in enumerate(theta_cond):
-        for gene_emiss in range(2):
-            for parent_emiss in config_combos[config_id]:
-                emiss_probs[config_id][gene_emiss][parent_emiss] = theta_cond[gene_emiss, chi_index.get(str(parent_emiss))]
-    return emiss_probs
+# def calculate_emiss_probs(config_combos, theta_cond, emiss_probs):
+#     # theta is a list of matrices
+#     for config_id, theta_matrix in enumerate(theta_cond):
+#         for gene_emiss in range(2):
+#             for parent_emiss in config_combos[config_id]:
+#                 emiss_probs[config_id][gene_emiss][parent_emiss] = theta_cond[gene_emiss, 1]
+#     return emiss_probs
 
 def structural_EM(gene, timeseries, all_nodes, G2INT):
     """ return HMDBN for gene """
-    current_obs = timeseries.get(gene)
-    ri = np.unique(current_obs)
-    T = len(current_obs)
+    current_obs = timeseries.get(gene)                  # timeseries for current gene
+    ri = np.unique(current_obs)                         # possible emissions for gene
+    Ri = len(ri)                                        # number of possible emissions for gene
+    T = len(current_obs)                                # length of timeseries
+
     convergence = False
     best_bwbic_score = 0
     delta = 1e-4
@@ -161,32 +175,34 @@ def structural_EM(gene, timeseries, all_nodes, G2INT):
             if n_parents > 0:
                 node_i.parents.pop(np.random.randint(n_parents))          
 
-        # 3.1. identify putative hidden graphs
-        configs, config_combos = putative_hidden_graphs(node_i, ri)
+        # 3.1. identify putative hidden graphs (note: configs can have different combinations of parents from above)
+        configs, configs_combos = putative_hidden_graphs(gene, node_i.parents, ri)
         n_configs = len(configs)
-        
+
+        # observations from all possible parents at this step observation
+
         ### OKAY ###
 
         # 3.2. set initial values for P(q|x,HMDBN), A, pi / calculate theta & E
-        initialization_prob = 1/n_configs
-        P = initialization_prob*np.ones((T, n_configs))
-        theta_cond = calculate_theta(current_obs, timeseries, zip(configs, config_combos), P)
-        probs = initialize_prob_dicts(config_combos, initialization_prob, timeseries, theta_cond)
+        P = (1/n_configs)*np.ones((n_configs, T))
+        trans_probs, emiss_probs, init_probs = initialize_prob_dicts(configs_combos, Ri)
+
         if n_parents == 0:
-            _, emiss_probs, _ = probs
             likelihood = 0
             # when there is only one possible state
             # for t in current_obs:
             #     likelihood += emiss_probs[0][t]
         else: 
-            fb_output, _ = forward_backward(current_obs, probs)
+            _, emiss_probs = calculate_theta(current_obs, timeseries, configs, configs_combos, P, emiss_probs)
+            probs = (trans_probs, emiss_probs, init_probs)
+            fb_output, _ = forward_backward(current_obs, timeseries, configs, probs)
 
             # 3.3. iteratively re-estimate transition parameter to improve P(q)
             q_convergence = False
             prev_likelihood = 0
             while not q_convergence:
                 # calculate probability of config h given x & HMDBN
-                probs, theta_cond, fb_output, likelihood = update_probs(probs, fb_output, configs, current_obs, timeseries)
+                probs, theta_cond, fb_output, likelihood = update_probs(probs, fb_output, configs, configs_combos, current_obs, timeseries)
                 if likelihood - prev_likelihood < delta:
                     q_convergence = True
                 prev_likelihood = likelihood
