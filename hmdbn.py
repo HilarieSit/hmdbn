@@ -51,11 +51,11 @@ def initialize_prob_dicts(config_combos, Ri):
                     
     return trans_probs, emiss_probs, init_probs
 
-def update_probs(probs, fb_output, configs, configs_combos, chi_dicts, current_obs, timeseries):
+def update_probs(obs, configs, configs_combos, probs, F, B):
+    current_obs, timeseries = obs
+    trans_probs, emiss_probs, init_probs = probs
     n_configs = len(configs)
     T = len(current_obs)
-    trans_probs, emiss_probs, init_probs = probs
-    F, B, P = fb_output
 
     # calculate pi (init_probs)
     pi_num = F[:,0] 
@@ -81,23 +81,15 @@ def update_probs(probs, fb_output, configs, configs_combos, chi_dicts, current_o
                 else:
                     trans_probs[config][config2] = sumLogProbs(trans_probs[q][next_q], A)
 
-    # calculate theta & emiss_probs
-    theta_cond, emiss_probs, bwbic_score = calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts, P, emiss_probs)
-    # print(emiss_probs)
-    probs = (trans_probs, emiss_probs, init_probs)
+    return init_probs, trans_probs
 
-    # forward backward algorithm
-    fb_output, likelihood = forward_backward(current_obs, timeseries, configs, probs)
-    # print(likelihood)
-    return probs, theta_cond, fb_output, likelihood, bwbic_score
-
-def calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts, P, emiss_probs):
+def calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P):
     """ calculates conditional probabilities of X given each config """
+    current_obs, timeseries = obs
     T = len(current_obs)
-    Ri = 2
+    Ri = len(np.unique(current_obs))
+
     theta_cond, bwbic_score = [], []
-    n_configs = len(configs)
-    
     for config_id, config in enumerate(configs):
         combinations = configs_combos[config_id]
         chi_dict = chi_dicts[config_id]
@@ -110,7 +102,7 @@ def calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts,
             Gi = len(chi_dict)                                  # number of discrete states of parents
             theta_num = np.zeros((Ri, Gi))
 
-            for t in range(len(current_obs)): 
+            for t in range(T): 
                 # from current_val & parent_vals, identify where to put count in chi (knonecker delta)
                 current_val = current_obs[t]
                 parent_vals = [parent_obs[t] for parent_obs in all_parent_obs]
@@ -122,6 +114,7 @@ def calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts,
             theta_num_sum = sumLogProbsFunc(list(np.vsplit(theta_num, Ri)))
             theta_denom = np.tile(theta_num_sum, (Ri, 1))
             theta_matrix = np.exp(theta_num - theta_denom)
+
             theta_sum = np.sum(theta_matrix)
             theta_cond.append(theta_matrix)
 
@@ -129,45 +122,66 @@ def calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts,
             for gene_emiss in range(Ri):
                 for parent_emiss in combinations:
                     emiss_probs[config_id][gene_emiss][str(parent_emiss)] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]/theta_sum
-            
-            # print(theta_matrix)
-
-            log_theta = np.log(theta_matrix)
-            bwbic_first_term = np.sum(np.exp(theta_num)*log_theta)
-            bwbic_second_term = (Gi/2)*(Ri-1)*np.log(np.sum(P[config_id,:]))
-            bwbic_score.append(bwbic_first_term-bwbic_second_term)
 
         else:
-            # something is wrong here
-            theta_array = np.zeros([Ri, T])
-            for t in range(len(current_obs)): 
+            Gi = 1
+            chi_index = 0
+            theta_num = np.zeros([Ri])
+            for t in range(T): 
                 current_val = current_obs[t]
-                theta_array[current_val, t] = 1
-            theta_cond.append(theta_array)
-            #emiss_probs[config_id][gene_emiss]['No_parents'] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]
+                theta_num[current_val] += P[config_id, t]
+
+            theta_matrix = np.expand_dims(theta_num/T, axis=1)
+            theta_cond.append(theta_matrix)
+
+            for gene_emiss in range(Ri):
+                emiss_probs[0][gene_emiss]['[]'] = theta_matrix[gene_emiss]
+
+        bwbic_first_term = np.zeros((Ri, Gi))
+        for t in range(T): 
+            # from current_val & parent_vals, identify where to put count in chi (knonecker delta)
+            current_val = current_obs[t]
+            parent_vals = [parent_obs[t] for parent_obs in all_parent_obs]
+            chi_index = chi_dict.get(str(parent_vals))
+            # print(theta_matrix.shape)
+            # print(bwbic_first_term.shape)
+            bwbic_first_term[current_val, chi_index] += P[config_id, t] * theta_matrix[current_val, chi_index]
+
+        bwbic_first_term = np.sum(bwbic_first_term)
+        bwbic_second_term = (Gi/2)*(Ri-1)*np.log(np.sum(P[config_id,:]))
+        bwbic = bwbic_first_term-bwbic_second_term
+        bwbic_score.append(bwbic)
+
 
         # calculate bwbic score
+        # log_theta = np.log(theta_matrix)
+        # bwbic_first_term = np.sum(np.exp(theta_num)*log_theta)
+        # bwbic_second_term = (Gi/2)*(Ri-1)*np.log(np.sum(P[config_id,:]))
+        # bwbic_score.append(bwbic_first_term-bwbic_second_term)
 
     return theta_cond, emiss_probs, bwbic_score
 
 def structural_EM(gene, timeseries, all_nodes, G2INT):
     """ return HMDBN for gene """
     current_obs = timeseries.get(gene)                  # timeseries for current gene
+    T = len(current_obs)                                # length of timeseries
     ri = np.unique(current_obs)                         # possible emissions for gene
     Ri = len(ri)                                        # number of possible emissions for gene
-    T = len(current_obs)                                # length of timeseries
+    obs = (current_obs, timeseries)                     # group current_obs with timeseries dict (easier arg to pass)
 
     convergence = False
     best_bwbic_score = 0
     delta = 1e-4
+    node_i = all_nodes[G2INT.get(gene)]
+
+    reccuring_parents = []
 
     while not convergence:
         # 2. randomly change parents by adding or deleting parent node 
         # (introduce stats from previous - to speed up)
-        node_i = all_nodes[G2INT.get(gene)]
         parents = node_i.parents
         n_parents = len(parents)
-        if bool(random.getrandbits(1)):
+        if bool(random.getrandbits(1)) or best_bwbic_score == 0:
             other_nodes = all_nodes.copy()
             # remove itself and parents
             other_nodes.remove(node_i)
@@ -177,9 +191,12 @@ def structural_EM(gene, timeseries, all_nodes, G2INT):
             parent_gene = np.random.choice(other_nodes)          
             node_i.parents.append(parent_gene)
         else:
-            # remove random parent
+            # remove parents (50/50)
             if n_parents > 0:
-                node_i.parents.pop(np.random.randint(n_parents))          
+                node_i.parents.pop(np.random.randint(0, n_parents))  
+
+        # recurring_parents
+        print([parents.gene for parents in node_i.parents])        
 
         # 3.1. identify putative hidden graphs (note: configs can have different combinations of parents from above)
         configs, configs_combos, chi_dicts = putative_hidden_graphs(gene, node_i.parents, ri)
@@ -188,33 +205,35 @@ def structural_EM(gene, timeseries, all_nodes, G2INT):
         # 3.2. set initial values for P(q|x,HMDBN), A, pi / calculate theta & E
         P = (1/n_configs)*np.ones((n_configs, T))
         trans_probs, emiss_probs, init_probs = initialize_prob_dicts(configs_combos, Ri)
-
-        _, emiss_probs, _ = calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts, P, emiss_probs)
+        _, emiss_probs, _ = calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P)
         probs = (trans_probs, emiss_probs, init_probs)
-        fb_output, _ = forward_backward(current_obs, timeseries, configs, probs)
+        
+        F, B, P, _ = forward_backward(obs, configs, probs)
 
         # 3.3. iteratively re-estimate transition parameter to improve P(q)
         q_convergence = False
         prev_likelihood = 0
         while not q_convergence:
             # calculate probability of config h given x & HMDBN
-            probs, theta_cond, fb_output, likelihood, bwbic_score = update_probs(probs, fb_output, configs, configs_combos, current_obs, timeseries)
-            theta_cond, emiss_probs, bwbic_score = calculate_theta(current_obs, timeseries, configs, configs_combos, chi_dicts, P, emiss_probs)
-            # print(emiss_probs)
+            init_probs, trans_probs = update_probs(obs, configs, configs_combos, probs, F, B)
+            theta_cond, emiss_probs, bwbic_score = calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P)
             probs = (trans_probs, emiss_probs, init_probs)
 
             # forward backward algorithm
-            fb_output, likelihood = forward_backward(current_obs, timeseries, configs, probs)
+            F, B, P, likelihood = forward_backward(obs, configs, probs)
             
             if likelihood - prev_likelihood < delta:
                 q_convergence = True
             prev_likelihood = likelihood
-        print([parents.gene for parents in node_i.parents])
-        print(bwbic_score)
-        print('========================= converged ')
 
-        overall_bwbic_score = np.max(bwbic_score)
+        # print([parents.gene for parents in node_i.parents])
+        print(bwbic_score)
+        print('[=========================] converged ')
+
+        overall_bwbic_score = np.sum(bwbic_score)
         print(overall_bwbic_score)
+        bwbic_ind = np.argmax(bwbic_score)
+        node_i.parents = [parents for parents in configs[bwbic_ind].parents]
 
         # 3.4 Calculate the BWBIC score on converged P, theta
         # bwbic_score = calculate_bwbic(gene, timeseries, theta, P, probs)
