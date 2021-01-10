@@ -78,15 +78,17 @@ def binary_conversion(ratios_timeseries):
         sorted_ind = np.argsort(obs)
         sorted_obs = obs[sorted_ind]
         # find dynamic range (discard lowest & highest two observations)
-        lowest = sorted_obs[2]
-        highest = sorted_obs[-3]
-        mean = (highest-lowest)/2
+        # lowest = sorted_obs[2]
+        # highest = sorted_obs[-3]
+        # mean = (highest-lowest)/2
+        median = np.median(sorted_obs[2:-3])
         # convert to binary based on dynamic range
-        binary_timeseries.append(np.where(obs>mean, 1, 0))
+        binary_timeseries.append(np.where(obs>median, 1, 0))
     return binary_timeseries
 
 
 if __name__ == '__main__':
+    # Just for testing
     # genes of interest, manually searched for IDs
     genes = {
         'eve': 12294,
