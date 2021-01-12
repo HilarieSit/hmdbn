@@ -12,7 +12,6 @@ class node:
     def __init__(self, gene, parents):
         self.gene = gene                     # gene id
         self.parents = parents               # parent nodes/graphs
-        # self.theta_i = theta_i               # conditional probabilities of induced/repressed state
 
 def initialize_nodes(genes):
     node_lib = {}
@@ -23,6 +22,8 @@ def initialize_nodes(genes):
 def identify_parent_emissions(config, ri):
     config_parents = config.parents
     combinations = [list(vals) for vals in itertools.product(ri, repeat=len(config_parents))]
+    # print(combinations)
+    # print(ri)
     chi_dict = {}
     for chi_index, combination in enumerate(combinations):
         chi_dict[str(list(combination))] = chi_index
@@ -32,7 +33,10 @@ def identify_transitions(P_list, T):
     # collect list of transition times & end time
     transition_times = []
     for P in P_list:
-        prev_val = None
+        # keep track of the previous parent expression (position 0)
+        prev_val = np.around(P[0,0], 0)
+        print(prev_val)
+        # if change past 0.5 probability
         for t in range(T):
             if (prev_val and (prev_val != P[:,t])) or (t == T-1):
                 transition_times.append(t)
@@ -70,17 +74,14 @@ def identify_states(node_parents, P_list, T):
 
     return parent_states, P, n_seg
 
-def putative_hidden_graphs(timeseries, node_i, node_lib):
+def putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri):
     """ return list of graphs with all parent combinations, corresponding possible parent emissions & dict for tracking combinations """
     P_list = []
     node_parents = node_i.parents
     child_gene = node_i.gene
 
-    # calculate posterior for every parent genes with child gene
-    for parent in node_parents:
-        node_ij = node(child_gene, [parent])
-        P = structural_EM(timeseries, node_i, node_lib, initialization=False)
-        P_list.append(P)
+    # get the correct initial posteriors
+    P_list = [init_posteriors.get(parent) for parent in node_parents]
 
     # identify most probable hidden states using P
     configs, configs_combos, chi_dicts = [], [], []
@@ -96,32 +97,30 @@ def putative_hidden_graphs(timeseries, node_i, node_lib):
     return configs, configs_combos, chi_dicts, P, n_seg
 
 def pre_initialization(current_gene, node_lib, timeseries):
-    # calculate posterior for all possible single parents
+    # calculate posterior for every possible parent gene with child gene
     node_i = node_lib.get(current_gene)
-    print(node_i)
-    all_posteriors = {}
+    init_posteriors = {}
     for p_gene, p_node in node_lib.items():
-        node_ij = node(current_gene, [p_node])
-        # print(p_node.gene)
-        P = structural_EM(timeseries, node_ij, node_lib, initialization=True)
-        # print(P)
-        all_posteriors[p_gene] = P
+        if p_gene != current_gene:
+            node_ij = node(current_gene, [p_node])
+            P = structural_EM(timeseries, node_ij, node_lib, initialization=True)
+            init_posteriors[p_gene] = P
     return node_i, init_posteriors
 
 
-def structural_EM(timeseries, node_i, node_lib, initialization=False):
+def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initialization=False):
     """ return HMDBN for gene """
     child_gene = node_i.gene
-    current_obs = timeseries.get(child_gene)
+    current_obs = timeseries.get(child_gene)[1:]
     obs = (current_obs, timeseries)
     T = len(current_obs)
-    ri = np.unique(current_obs)
+    ri = np.unique([all_obs for all_obs in timeseries.values()])
 
     convergence = False
     best_bwbic_score = 0
-    delta = 0.1
+    delta = 1e-5
 
-    no_parent_node = node(child_gene, [])
+    no_parent_node = node(child_gene, [node_i])
 
     while not convergence:
         if not initialization:
@@ -142,7 +141,7 @@ def structural_EM(timeseries, node_i, node_lib, initialization=False):
                 node_i.parents.pop(np.random.randint(0, n_parents))  
 
             # 3.1. identify putative hidden graphs
-            configs, configs_combos, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib)  
+            configs, configs_combos, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri)  
 
         else:
             # initialization step with single parent 
@@ -153,7 +152,7 @@ def structural_EM(timeseries, node_i, node_lib, initialization=False):
                 configs_combos.append(combinations)
                 chi_dicts.append(chi_dict)
             P = np.ones([2, T])/2
-            n_seg = 1
+            n_seg = None
     
         print('parents: ', [parents.gene for parents in node_i.parents])
         # 3.2. set initial values for P(q|x,HMDBN), A, pi / calculate theta & E
@@ -161,7 +160,6 @@ def structural_EM(timeseries, node_i, node_lib, initialization=False):
         _, emiss_probs, _ = calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P)
         probs = (trans_probs, emiss_probs, init_probs)
         F, B, P, f_likelihood = forward_backward(obs, configs, probs)
-        # print(P)
 
         # 3.3. iteratively re-estimate transition parameter to improve P(q)
         q_convergence = False
@@ -180,13 +178,9 @@ def structural_EM(timeseries, node_i, node_lib, initialization=False):
                 q_convergence = True
             prev_likelihood = likelihood
 
-            print(P)
-        
-        # print(trans_probs)
-        # print(P)
         plt.clf()
-        plt.plot(np.linspace(1, 66, 66), P[0,:], 'blue')
-        plt.plot(np.linspace(1, 66, 66), P[1,:], 'orange')
+        plt.plot(np.linspace(1, 65, 65), P[0,:], 'blue')
+        plt.plot(np.linspace(1, 65, 65), P[1,:], 'orange')
         plt.title([parents.gene for parents in node_i.parents])
         plt.show()
         if initialization:
@@ -229,21 +223,19 @@ if __name__ == "__main__":
     'prm': 4385,
     'actn': 8237,
     'up': 6990,
-    'myo61f': 2013,
+    # 'myo61f': 2013,
     'msp300': 11654}
 
 
     all_genes = list(gene_id.keys())
     timeseries = load_data(gene_id, 'data/testing')
+    print(timeseries)
     node_lib = initialize_nodes(all_genes)
-    current_gene = 'eve'
-
-    # current_obs = timeseries.get(current_gene)            # timeseries for current gene
-    # obs = (current_obs, timeseries)                     # group current_obs with timeseries dict (easier arg to pass)
+    current_gene = 'twi'
 
     # preinitialize 
     node_i, init_posteriors = pre_initialization(current_gene, node_lib, timeseries)
-    hmdbn = structural_EM(obs, node_i, all_nodes, T, ri)
+    hmdbn = structural_EM(timeseries, node_i, node_lib, init_posteriors, initialization=False)
 
 
 
@@ -252,7 +244,7 @@ if __name__ == "__main__":
 
     # construct list of all nodes (corresponding to genes) & position dict
 
-    gene = 'act'
+    gene = 'up'
     
     # perform structural EM on every gene
 

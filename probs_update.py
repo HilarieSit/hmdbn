@@ -16,12 +16,8 @@ def initialize_prob_dicts(configs_combos, ri, T, n_seg):
     Ri = len(ri)
     n_configs = len(configs_combos)
     pi_init = np.log(1/n_configs)
-    # trans_prob_init = np.log(1/n_configs)
-    # self_prob_init = np.log(1-(n_seg/n_configs))
-    trans_prob_init = np.log(0.9)
-    self_prob_init = np.log(0.1)
-    # trans_prob_init = 1
-    # self_prob_init = 1
+    trans_prob_init = np.log(0.05)
+    self_prob_init = np.log(0.95)
 
     for config_id, combinations in enumerate(configs_combos):
         init_probs[config_id] = pi_init
@@ -42,7 +38,8 @@ def update_probs(obs, configs, configs_combos, probs, F, B, P, f_likelihood):
     current_obs, timeseries = obs
     trans_probs, emiss_probs, init_probs = probs
     n_configs = len(configs)
-    T = len(current_obs)
+    T = len(current_obs)-1
+    current_obs = current_obs[1:]
 
     # calculate pi (init_probs)
     pi_num = F[:,0] 
@@ -52,8 +49,6 @@ def update_probs(obs, configs, configs_combos, probs, F, B, P, f_likelihood):
         init_probs[h] = pi[h]
 
     # calculate A (trans_probs)
-    # print(F)
-    # print(B)
     A = collections.defaultdict(dict)   
     for prev_q, _ in enumerate(configs):
         for q, _ in enumerate(configs): 
@@ -62,12 +57,11 @@ def update_probs(obs, configs, configs_combos, probs, F, B, P, f_likelihood):
     for prev_q, config in enumerate(configs):
         for q, config2 in enumerate(configs): 
             conf2_parents = config2.parents
-            for t in range(1, len(current_obs)-1):
+            for t in range(1, T):
                 # figure out parent observations for emiss probs
                 back_parent_obs = str([timeseries.get(parent.gene)[t] for parent in conf2_parents])
                 
-                 # calculate numerator 
-                # print(F[prev_q,t-1]+trans_probs[prev_q][q]+emiss_probs[q][current_obs[t]][back_parent_obs]+B[q,t])
+                # calculate numerator 
                 A_count = F[prev_q,t-1]+trans_probs[prev_q][q]+emiss_probs[q][current_obs[t]][back_parent_obs]+B[q,t]-f_likelihood
                 
                 if t == 1:
@@ -83,8 +77,6 @@ def update_probs(obs, configs, configs_combos, probs, F, B, P, f_likelihood):
         for q2 in range(len(configs)):
             trans_probs[prev_q][q2] = A[prev_q][q2]-A_denom
 
-            # print(q2, np.exp(trans_probs))
-    print(trans_probs)
     return init_probs, trans_probs
 
 def calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P):
@@ -119,8 +111,6 @@ def calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P):
         theta_denom = np.tile(theta_num_sum, (Ri, 1))
         theta_matrix = np.log(theta_num/theta_denom)
 
-        # print(theta_matrix)
-
         theta_cond.append(theta_matrix)
 
         # fill in emiss_probs
@@ -129,21 +119,6 @@ def calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P):
                 emiss_probs[config_id][gene_emiss][str(parent_emiss)] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]-np.log(len(combinations))
                 if emiss_probs[config_id][gene_emiss][str(parent_emiss)] == -inf:
                     emiss_probs[config_id][gene_emiss][str(parent_emiss)] = 1
-        # else:
-        #     Gi = 1
-        #     chi_index = 0
-        #     theta_num = np.zeros([Ri])
-        #     for t in range(T): 
-        #         current_val = current_obs[t]
-        #         theta_num[current_val] += P[config_id, t]
-
-        #     print(theta_num)
-
-        #     theta_matrix = np.log(np.expand_dims(theta_num/T, axis=1))
-        #     theta_cond.append(theta_matrix)
-
-        #     for gene_emiss in range(Ri):
-        #         emiss_probs[1][gene_emiss]['[]'] = theta_matrix[gene_emiss]
 
         bwbic_first_term = np.zeros((Ri, Gi))
         for t in range(T): 
