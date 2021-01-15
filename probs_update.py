@@ -16,8 +16,12 @@ def initialize_prob_dicts(configs_combos, ri, T, n_seg):
     Ri = len(ri)
     n_configs = len(configs_combos)
     pi_init = np.log(1/n_configs)
-    trans_prob_init = np.log(0.05)
-    self_prob_init = np.log(0.95)
+    if n_seg is None:
+        trans_prob_init = np.log(0.05)
+        self_prob_init = np.log(0.95)
+    else:
+        trans_prob_init = np.log(0.5)
+        self_prob_init = np.log(0.5)
 
     for config_id, combinations in enumerate(configs_combos):
         init_probs[config_id] = pi_init
@@ -107,9 +111,12 @@ def calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P):
             # calculate theta (do all i,jk at once)
             theta_num[current_val, chi_index] += P[config_id, t]
 
+        # print(theta_num)
         theta_num_sum = np.sum(theta_num, axis=0)
+        theta_num_sum[theta_num_sum == 0] = 1e-3
         theta_denom = np.tile(theta_num_sum, (Ri, 1))
-        theta_matrix = np.log(theta_num/theta_denom)
+        theta_matrix = np.log(theta_num)-np.log(theta_denom)
+        print(np.exp(theta_matrix))
 
         theta_cond.append(theta_matrix)
 
@@ -132,5 +139,5 @@ def calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P):
         bwbic_second_term = (Gi/2)*(Ri-1)*np.log(np.sum(P[config_id,:]))
         bwbic = bwbic_first_term-bwbic_second_term
         bwbic_score.append(bwbic)
-
+    bwbic_score = np.sum(bwbic_score)
     return theta_cond, emiss_probs, bwbic_score

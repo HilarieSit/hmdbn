@@ -53,6 +53,6 @@ def forward_backward(obs, configs, probs):
     denominator = sumLogProbsFunc(np.vsplit(numerator, n))
     R = np.exp(numerator - denominator)
 
-    likelihood_f = sumLogProbsFunc(np.hsplit(F[:,T-1], n))
+    likelihood_f = sumLogProbsFunc(np.hsplit(F[:,-1], n))
 
     return F, B, R, likelihood_f

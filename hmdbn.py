@@ -10,6 +10,7 @@ from matplotlib import pyplot as plt
 from data_processing import load_data
 from baum_welch import *
 from probs_update import *
+from visualization import *
 
 class node:
     def __init__(self, gene, parents):
@@ -68,7 +69,6 @@ def identify_states(node_parents, P_list, T):
     for st, tt in enumerate(transition_times):
         state_ind = np.argwhere(segments[:, st] == 1.)
         state_list.append([node_parents[int(i)] for i in state_ind])
-    print(state_list)
     
     # search for unique parents for P 
     states = [] 
@@ -76,69 +76,12 @@ def identify_states(node_parents, P_list, T):
 
     P = np.zeros([len(states), T])
     pt = 0
-    print(transition_times)
     for state, tt in zip(state_list, transition_times):
         p_ind = states.index(state)
         P[p_ind, pt:tt] = 1
         pt = tt
 
-    print(P)
-    
-    # for st, tt in enumerate(transition_times):
-    #     all_states = []
-    #     state_ind = np.argwhere(segments[:, st] == 1.)
-    #     print('ind', state_ind)
-    #     if state_ind.size == 0: 
-    #         all_states.append([])
-    #     else: 
-    #         for ind in state_ind[0,:]:
-    #             all_states.append(node_parents[int(ind)])
-    #     print('all_states', all_states)
-        # match all states to node_parents
-        # P needs to match states
-        
-    # for t in range(T):
-    #     for state in all_states:
-    #         P[state, t] 
-
-
-    # print(all_states)
-
-
-
-        # if not state_ind:
-        #     P[state_ind, prev_tt:tt] = 1
-        # figure out the column number for P from state_ind
-        # print('state_ind', state_ind)
-        # for i in state_ind:
-        #     print(state_ind)
-        #     states = node_parents[int(i)]
-        # print(states)
-        # print([p.gene for p in states])
-            # print(states.parents)
-        # genes = 0
-        # print(states.parents)
-        # parent_states.append(states)
-        # parent_genes.append(genes)
-    
-    # print(parent_genes)
-    # initialize P matrix
-    # i = 0
-    # P = np.zeros([len(node_parents),T])
-    # break_point = transition_times[i]
-    # for t in range(T):
-    #     if not parent_states[i]:
-    #         curr_state = len(node_parents)-1
-    #     else:
-    #         curr_state = node_parents.index(parent_states[i])
-    #     P[curr_state, t] = 1
-    #     if t == break_point-1:
-    #         i+=1
-    #         break_point = transition_times[i]
-
-    # print(P)
-
-    return all_states, P, n_seg
+    return states, P, n_seg
 
 def putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri, no_parent_node):
     """ return list of graphs with all parent combinations, corresponding possible parent emissions & dict for tracking combinations """
@@ -152,15 +95,16 @@ def putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri,
     # identify most probable hidden states using P
     configs, configs_combos, chi_dicts = [], [], []
     possible_parents, P, n_seg = identify_states(node_parents, P_list, T)
+    print(possible_parents)
 
     for parents in possible_parents:
         network = node(child_gene, parents)
-        parents_emiss, chi_dict = identify_parent_emissions([parents], ri)
+        parents_emiss, chi_dict = identify_parent_emissions(network, ri)
         configs.append(network)
         configs_combos.append(parents_emiss)
         chi_dicts.append(chi_dict)
 
-    return configs, configs_combos, chi_dicts, P, n_seg
+    return network, configs, configs_combos, chi_dicts, P, n_seg
 
 def pre_initialization(current_gene, node_lib, timeseries, filepath):
     # calculate posterior for every possible parent gene with child gene
@@ -197,7 +141,7 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
 
     convergence = False
     best_bwbic_score = 0
-    delta = 1e-5
+    delta = 1e-3
 
     no_parent_node = node(current_gene, [node_i])
 
@@ -222,9 +166,13 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
 
             print('parents: ', [parents.gene for parents in node_i.parents]) 
 
+            # else:
             # 3.1. identify putative hidden graphs
-            configs, configs_combos, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri, no_parent_node)  
-
+            network, configs, configs_combos, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri, no_parent_node)  
+            plot_posteriors(P, configs)
+            if len(node_i.parents) == 1:
+                n_seg = None
+                # return bwbic_score
         else:
             # initialization step with single parent 
             configs = [node_i, no_parent_node]
@@ -242,6 +190,11 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
         _, emiss_probs, _ = calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P)
         probs = (trans_probs, emiss_probs, init_probs)
         F, B, P, f_likelihood = forward_backward(obs, configs, probs)
+        # plt.clf()
+        # plt.plot(np.linspace(1, 65, 65), P[0,:], 'blue')
+        # plt.plot(np.linspace(1, 65, 65), P[1,:], 'orange')
+        # plt.title([parents.gene for parents in node_i.parents])
+        # plt.show()
 
         # 3.3. iteratively re-estimate transition parameter to improve P(q)
         q_convergence = False
@@ -258,12 +211,10 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
             if likelihood - prev_likelihood < delta:
                 q_convergence = True
             prev_likelihood = likelihood
-
-        # plt.clf()
-        # plt.plot(np.linspace(1, 65, 65), P[0,:], 'blue')
-        # plt.plot(np.linspace(1, 65, 65), P[1,:], 'orange')
-        # plt.title([parents.gene for parents in node_i.parents])
-        # plt.show()
+            # print(P)
+            print(bwbic_score)
+            if initialization is False:
+                plot_posteriors(P, configs)
 
         if initialization:
             return P
@@ -313,7 +264,7 @@ if __name__ == "__main__":
     all_genes = list(gene_id.keys())
     timeseries = load_data(gene_id, 'data/testing')
     node_lib = initialize_nodes(all_genes)
-    current_gene = 'twi'
+    current_gene = 'up'
     print('\n\033[1mCURRENT GENE: '+current_gene+'\033[0m')
 
     # preinitialize 
