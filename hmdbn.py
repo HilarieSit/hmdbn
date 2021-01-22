@@ -17,21 +17,51 @@ class node:
         self.gene = gene                     # gene id
         self.parents = parents               # parent nodes/graphs
 
+'''
+Create a node library with genes of interest
+Arguments:
+    genes [list]: all genes of interest
+Returns:
+    node_lib [dict]: nodes corresponding to gene key
+'''
 def initialize_nodes(genes):
     node_lib = {}
     for gene in genes:
         node_lib[gene] = node(gene, parents=[])
     return node_lib
 
-def identify_parent_emissions(config, ri):
-    config_parents = config.parents
-    combinations = [list(vals) for vals in itertools.product(ri, repeat=len(config_parents))]
+'''
+Identify all possible parent emissions given state
+Arguments:
+    state [node]: node_i
+    ri [int]: possible emissions of genes - i.e. (0, 1)
+Returns:
+    combinations [list]: list of possible parent emissions for state
+    chi_dict [dict]: tracking parent emissions with int
+'''
+def identify_parent_emissions(state, ri):
+    state_parents = state.parents
+    if not state_parents:
+        # if '[]', parent is itself
+        cp_length = 1
+    else:
+        cp_length = len(state_parents)
+    combinations = [list(vals) for vals in itertools.product(ri, repeat=cp_length)]
 
     chi_dict = {}
     for chi_index, combination in enumerate(combinations):
         chi_dict[str(list(combination))] = chi_index
     return combinations, chi_dict
 
+'''
+Calculate transition times from intialization posteriors
+Arguments:
+    P_list [list]: posterior distributions corresponding to node_parents
+    T [float]: length of observations
+Returns:
+    transition_times [list]: transition indices 
+    n_seg [int]: number of segments (state transitions)
+'''
 def identify_transitions(P_list, T):
     # calculate transition times for all parents
     times = []
@@ -50,30 +80,39 @@ def identify_transitions(P_list, T):
     n_seg = len(transition_times)                       # number of segments
     return transition_times, n_seg
 
+'''
+Identify possible states from initalization posteriors and initialize posterior for HMDBN
+Arguments:
+    node_parents [list]: parents of stationary graph
+    P_list [list]: posterior distributions corresponding to node_parents
+    T [float]: length of observations
+Returns:
+    states [list]: possible graphs for timeseries
+    P [float]: posterior distribution matrix
+    n_seg [int]: number of segments (state transitions)
+'''
 def identify_states(node_parents, P_list, T):
     # identify transition points in timeseries
     transition_times, n_seg = identify_transitions(P_list, T)
 
-    # identify possible states from segment values
+    # calculate segment values before transition points and identify possible states
     states, parent_genes = [], []
-
-    # calculate segment values before t
     segments = np.zeros((len(P_list), n_seg))
     for nP, P in enumerate(P_list):
-        for nt, t in enumerate(transition_times):
-            segments[nP, nt] = np.around(P[0,t-1], 0)
+        for nt, tt in enumerate(transition_times):
+            segments[nP, nt] = np.around(P[0, tt-1], 0)
 
-    # get list of possible parents for each t get column indice for all t
-    # FIRST GET POSSIBLE STATES 
+    # get list of possible parents for each transition time, get column indices for all tt
     state_list = []
     for st, tt in enumerate(transition_times):
         state_ind = np.argwhere(segments[:, st] == 1.)
         state_list.append([node_parents[int(i)] for i in state_ind])
     
-    # search for unique parents for P 
+    # search for unique states
     states = [] 
     [states.append(x) for x in state_list if x not in states]
 
+    # initialize P matrix
     P = np.zeros([len(states), T])
     pt = 0
     for state, tt in zip(state_list, transition_times):
@@ -83,31 +122,57 @@ def identify_states(node_parents, P_list, T):
 
     return states, P, n_seg
 
-def putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri, no_parent_node):
-    """ return list of graphs with all parent combinations, corresponding possible parent emissions & dict for tracking combinations """
+'''
+Identify possible states and parent emissions from stationary graph
+Arguments:
+    timeseries [dict]: observations corresponding to gene key
+    node_i [node]: node corresponding to gene_i
+    node_lib [dict]: nodes corresponding to gene key
+    init_posteriors [optional, dict]: posterior distributions corresponding to parent gene key
+    T [float]: length of observations
+    ri [int]: possible emissions of genes - i.e. (0, 1)
+Returns:
+    states [list]: possible graphs for timeseries
+    state_emiss [list]: corresponding parent emissions
+    chi_dicts [list]: corresponding dictionary for tracking parent emissions
+    P [float]: posterior distribution matrix
+    n_seg [int]: number of segments (state transitions)
+'''
+def putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri):
     P_list = []
     child_gene = node_i.gene
     node_parents = node_i.parents
 
     # get the correct initial posteriors
-    P_list = [init_posteriors[parent.gene] for parent in node_parents]
+    P_list = [init_posteriors[parent] for parent in node_parents]
 
     # identify most probable hidden states using P
-    configs, configs_combos, chi_dicts = [], [], []
+    states, state_emiss, chi_dicts = [], [], []
     possible_parents, P, n_seg = identify_states(node_parents, P_list, T)
-    print(possible_parents)
+    print('pp', possible_parents)
 
     for parents in possible_parents:
         network = node(child_gene, parents)
         parents_emiss, chi_dict = identify_parent_emissions(network, ri)
-        configs.append(network)
-        configs_combos.append(parents_emiss)
+        states.append(network)
+        state_emiss.append(parents_emiss)
         chi_dicts.append(chi_dict)
 
-    return network, configs, configs_combos, chi_dicts, P, n_seg
+    return states, state_emiss, chi_dicts, P, n_seg
 
+'''
+Pre-initialization: calculate posteriors and BWBIC score for every possible parent gene of gene_i
+Arguments:
+    current_gene [str]: name of gene_i
+    node_lib [dict]: nodes corresponding to gene key
+    timeseries [dict]: observations corresponding to gene key
+    filepath [str]: path to saved posteriors
+Returns:
+    node_i [node]: node corresponding to gene_i
+    init_posteriors [dict]: posterior distributions corresponding to parent gene key
+'''
 def pre_initialization(current_gene, node_lib, timeseries, filepath):
-    # calculate posterior for every possible parent gene with child gene
+    # calculate posterior for every possible parent gene 
     print('\n initializing')
     node_i = node_lib.get(current_gene)
     filename = filepath+current_gene+'.pkl'
@@ -119,10 +184,9 @@ def pre_initialization(current_gene, node_lib, timeseries, filepath):
             print('complete')
     except:
         init_posteriors = {}
-        for p_gene, p_node in node_lib.items():
-            # if p_gene != current_gene:
-            node_ij = node(current_gene, [p_node])
-            P = structural_EM(timeseries, node_ij, node_lib, initialization=True)
+        for p_gene in node_lib.keys():
+            node_ij = node(current_gene, [p_gene])
+            P, bwbic_score = structural_EM(timeseries, node_ij, node_lib, initialization=True)
             init_posteriors[p_gene] = P
 
         with open(filename, 'wb') as output:
@@ -130,9 +194,19 @@ def pre_initialization(current_gene, node_lib, timeseries, filepath):
         print('\n -> '+filename+' saved .........')
     return node_i, init_posteriors
 
-
+'''
+Perform structural expectation maximization on gene_i to find HMDBN_i
+Arguments:
+    timeseries [dict]: observations corresponding to gene key
+    node_i [node]: node corresponding to gene_i
+    node_lib [dict]: nodes corresponding to gene key
+    init_posteriors [optional, dict]: posterior distributions corresponding to parent gene key
+    intialization [optional, bool]: true if called by pre_initialization 
+Returns:
+    P [float]: posterior distribution matrix
+    bwbic_score [float]: BWBIC score for final HMDBN_i
+'''
 def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initialization=False):
-    """ return HMDBN for gene """
     child_gene = node_i.gene
     current_obs = timeseries.get(child_gene)[1:]
     obs = (current_obs, timeseries)
@@ -140,23 +214,20 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
     ri = np.unique([all_obs for all_obs in timeseries.values()])
 
     convergence = False
-    best_bwbic_score = 0
     delta = 1e-3
-
-    no_parent_node = node(current_gene, [node_i])
 
     while not convergence:
         if not initialization:
             print('\n -> performing structural EM .........')
-            # 2. randomly change parents by adding or deleting parent node 
+            # randomly change node parents by adding or deleting parent node 
             parents = node_i.parents
             n_parents = len(parents)
 
             if bool(random.getrandbits(1)) or n_parents < 2:
-                other_nodes = list(node_lib.values())
-                # remove itself and parents
-                other_nodes.remove(node_i)
+                other_nodes = list(node_lib.keys())
+                other_nodes.remove(child_gene)
                 for parent in parents:
+                    print(parent)
                     other_nodes.remove(parent)
                 # add random parent
                 parent_gene = np.random.choice(other_nodes)          
@@ -164,74 +235,64 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
             else:
                 node_i.parents.pop(np.random.randint(0, n_parents)) 
 
-            print('parents: ', [parents.gene for parents in node_i.parents]) 
+            # identify putative hidden graphs from stationary network
+            states, state_emiss, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri)  
+            plot_posteriors(P, states)
 
-            # else:
-            # 3.1. identify putative hidden graphs
-            network, configs, configs_combos, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri, no_parent_node)  
-            plot_posteriors(P, configs)
             if len(node_i.parents) == 1:
                 n_seg = None
-                # return bwbic_score
+                # return bwbic_score from pre-initialization
+
         else:
             # initialization step with single parent 
-            configs = [node_i, no_parent_node]
-            configs_combos, chi_dicts = [], []
-            for config in configs:
-                combinations, chi_dict = identify_parent_emissions(config, ri)
-                configs_combos.append(combinations)
+            no_parent_node = node(current_gene, [current_gene])         # no parents - parent is itself
+            states = [node_i, no_parent_node]
+            state_emiss, chi_dicts = [], []
+            for state in states:
+                combinations, chi_dict = identify_parent_emissions(state, ri)
+                state_emiss.append(combinations)
                 chi_dicts.append(chi_dict)
+            # initialize posterior as 50-50
             P = np.ones([2, T])/2
             n_seg = None
     
-        print('parents: ', [parents.gene for parents in node_i.parents])
-        # 3.2. set initial values for P(q|x,HMDBN), A, pi / calculate theta & E
-        trans_probs, emiss_probs, init_probs = initialize_prob_dicts(configs_combos, ri, T, n_seg)
-        _, emiss_probs, _ = calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P)
-        probs = (trans_probs, emiss_probs, init_probs)
-        F, B, P, f_likelihood = forward_backward(obs, configs, probs)
-        # plt.clf()
-        # plt.plot(np.linspace(1, 65, 65), P[0,:], 'blue')
-        # plt.plot(np.linspace(1, 65, 65), P[1,:], 'orange')
-        # plt.title([parents.gene for parents in node_i.parents])
-        # plt.show()
+        print('parents: ', [parents for parents in node_i.parents])
 
-        # 3.3. iteratively re-estimate transition parameter to improve P(q)
+        # set initial values for P(q|x,HMDBN), A, pi, theta, E
+        trans_probs, emiss_probs, init_probs = initialize_prob_dicts(state_emiss, ri, T, n_seg)
+        _, emiss_probs, _ = calculate_theta(child_gene, obs, states, state_emiss, chi_dicts, emiss_probs, P)
+        probs = (trans_probs, emiss_probs, init_probs)
+        F, B, P, f_likelihood = forward_backward(child_gene, obs, states, probs)
+
+        # iteratively re-estimate transition parameter to improve P(q)
         q_convergence = False
         prev_likelihood = np.NINF
 
         while q_convergence is False:
-            # calculate probability of config h given x & HMDBN
-            init_probs, trans_probs = update_probs(obs, configs, configs_combos, probs, F, B, P, f_likelihood)
-            theta_cond, emiss_probs, bwbic_score = calculate_theta(obs, configs, configs_combos, chi_dicts, emiss_probs, P)
+            # calculate probability of state h given x & HMDBN
+            init_probs, trans_probs = update_probs(child_gene, obs, states, probs, F, B, P, f_likelihood)
+            theta_cond, emiss_probs, bwbic_score = calculate_theta(child_gene, obs, states, state_emiss, chi_dicts, emiss_probs, P)
             probs = (trans_probs, emiss_probs, init_probs)
 
-            # forward backward algorithm
-            F, B, P, likelihood = forward_backward(obs, configs, probs)
+            # baum welch algorithm
+            F, B, P, likelihood = forward_backward(child_gene, obs, states, probs)
+
+            # if increase in likelihood < delta, end loop
             if likelihood - prev_likelihood < delta:
                 q_convergence = True
+
             prev_likelihood = likelihood
-            # print(P)
-            print(bwbic_score)
-            if initialization is False:
-                plot_posteriors(P, configs)
+
+        if initialization is False:
+            plot_posteriors(P, states)
 
         if initialization:
-            return P
+            return P, bwbic_score
 
 
         # print([parents.gene for parents in node_i.parents])
         print(bwbic_score)
         print('[=========================] converged ')
-
-        if not initialization:
-            overall_bwbic_score = np.sum(bwbic_score)
-            print(overall_bwbic_score)
-            bwbic_ind = np.argmax(bwbic_score)
-        # node_i.parents = [parents for parents in configs[bwbic_ind].parents]
-
-        # 3.4 Calculate the BWBIC score on converged P, theta
-        # bwbic_score = calculate_bwbic(gene, timeseries, theta, P, probs)
 
         # # save HMDBN with best BWBIC score
         # if bwbic_score > high_score:
@@ -257,14 +318,13 @@ if __name__ == "__main__":
     'prm': 4385,
     'actn': 8237,
     'up': 6990,
-    # 'myo61f': 2013,
     'msp300': 11654}
 
-
+    # load all data
     all_genes = list(gene_id.keys())
     timeseries = load_data(gene_id, 'data/testing')
     node_lib = initialize_nodes(all_genes)
-    current_gene = 'up'
+    current_gene = 'actn'
     print('\n\033[1mCURRENT GENE: '+current_gene+'\033[0m')
 
     # preinitialize 

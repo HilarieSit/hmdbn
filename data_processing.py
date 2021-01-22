@@ -49,7 +49,7 @@ def process_raw_data(genes):
         gse.gsms.pop(sample)
 
     # extract ratio data for genes of interest
-    all_ratios = gse.pivot_samples('Mean_of_Ratios')
+    all_ratios = gse.pivot_samples('Ratio_of_Means')
     ratios = all_ratios.loc[list(genes.values())]
     genes_list = list(ratios.index.values)
 
@@ -78,12 +78,12 @@ def binary_conversion(ratios_timeseries):
         sorted_ind = np.argsort(obs)
         sorted_obs = obs[sorted_ind]
         # find dynamic range (discard lowest & highest two observations)
-        # lowest = sorted_obs[2]
-        # highest = sorted_obs[-3]
-        # mean = (highest-lowest)/2
-        median = np.median(sorted_obs[2:-3])
+        lowest = sorted_obs[2]
+        highest = sorted_obs[-3]
+        mean = (highest-lowest)/2
+        # median = np.median(sorted_obs[2:-3])
         # convert to binary based on dynamic range
-        binary_timeseries.append(np.where(obs>median, 1, 0))
+        binary_timeseries.append(np.where(obs>mean, 1, 0))
     return binary_timeseries
 
 
@@ -94,12 +94,13 @@ if __name__ == '__main__':
         'eve': 12294,
         'gfl/lmd': 9244,
         'twi': 12573,
-        'mlc1': 10147,
-        'mhc': 4693,
+        # 'mlc1': 10147,
+        'mhc1': 4693,
         'prm': 4385,
         'actn': 8237,
-        'up': 6990,
-        'myo61f': 2013,
+        '128up': 10898,
+        '140up': 6990,
+        # 'myo61f': 2013,
         'msp300': 11654}
 
     timeseries_dict = load_data(genes, "data/testing")
