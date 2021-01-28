@@ -41,11 +41,11 @@ Returns:
 '''
 def identify_parent_emissions(state, ri):
     state_parents = state.parents
-    if not state_parents:
-        # if '[]', parent is itself
-        cp_length = 1
-    else:
-        cp_length = len(state_parents)
+    # if not state_parents:
+    #     # if '[]', parent is itself
+    #     cp_length = 1
+    # else:
+    cp_length = len(state_parents)
     combinations = [list(vals) for vals in itertools.product(ri, repeat=cp_length)]
 
     chi_dict = {}
@@ -111,15 +111,24 @@ def identify_states(node_parents, P_list, T):
     # search for unique states
     states = [] 
     [states.append(x) for x in state_list if x not in states]
-
+    
     # initialize P matrix
-    P = np.zeros([len(states), T])
+    P = np.ones([len(states), T])
     pt = 0
-    for state, tt in zip(state_list, transition_times):
-        p_ind = states.index(state)
-        P[p_ind, pt:tt] = 1
-        pt = tt
+    print('node parents', node_parents)
+    print(transition_times)
+    for state_id, state in enumerate(states):
+        for i, sP in enumerate(P_list):
+            parent = node_parents[i]
+            if parent in state:
+                P[state_id, :] *= sP[0, :]
+            else:
+                P[state_id, :] *= sP[1, :]
 
+        # normalize P so that it sums to 1
+    P_denom = np.tile(np.sum(P, axis=0), (len(states), 1))
+    P = P/P_denom
+    # plot_puntative_graphs2(node_parents, P_list, states, P)
     return states, P, n_seg
 
 '''
@@ -209,6 +218,10 @@ Returns:
 def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initialization=False):
     child_gene = node_i.gene
     current_obs = timeseries.get(child_gene)[1:]
+    # vals, counts = np.unique(current_obs, return_counts=True)
+    # P = counts/np.sum(counts)
+    # print(P)
+
     obs = (current_obs, timeseries)
     T = len(current_obs)
     ri = np.unique([all_obs for all_obs in timeseries.values()])
@@ -227,7 +240,6 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
                 other_nodes = list(node_lib.keys())
                 other_nodes.remove(child_gene)
                 for parent in parents:
-                    print(parent)
                     other_nodes.remove(parent)
                 # add random parent
                 parent_gene = np.random.choice(other_nodes)          
@@ -237,15 +249,15 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
 
             # identify putative hidden graphs from stationary network
             states, state_emiss, chi_dicts, P, n_seg = putative_hidden_graphs(timeseries, node_i, node_lib, init_posteriors, T, ri)  
-            plot_posteriors(P, states)
+            print(states)
 
             if len(node_i.parents) == 1:
-                n_seg = None
+                n_seg = 1
                 # return bwbic_score from pre-initialization
 
         else:
             # initialization step with single parent 
-            no_parent_node = node(current_gene, [current_gene])         # no parents - parent is itself
+            no_parent_node = node(current_gene, [])
             states = [node_i, no_parent_node]
             state_emiss, chi_dicts = [], []
             for state in states:
@@ -254,7 +266,7 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
                 chi_dicts.append(chi_dict)
             # initialize posterior as 50-50
             P = np.ones([2, T])/2
-            n_seg = None
+            n_seg = 1
     
         print('parents: ', [parents for parents in node_i.parents])
 
@@ -283,8 +295,8 @@ def structural_EM(timeseries, node_i, node_lib, init_posteriors=None, initializa
 
             prev_likelihood = likelihood
 
-        if initialization is False:
-            plot_posteriors(P, states)
+        # if initialization is False:
+        #     plot_posteriors(P, states)
 
         if initialization:
             return P, bwbic_score
@@ -324,7 +336,7 @@ if __name__ == "__main__":
     all_genes = list(gene_id.keys())
     timeseries = load_data(gene_id, 'data/testing')
     node_lib = initialize_nodes(all_genes)
-    current_gene = 'actn'
+    current_gene = 'up'
     print('\n\033[1mCURRENT GENE: '+current_gene+'\033[0m')
 
     # preinitialize 
@@ -333,12 +345,9 @@ if __name__ == "__main__":
 
 
 
-
-
-
     # construct list of all nodes (corresponding to genes) & position dict
 
-    gene = 'up'
+    gene = 'twi'
     
     # perform structural EM on every gene
 

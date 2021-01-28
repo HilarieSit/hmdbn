@@ -1,4 +1,6 @@
 import numpy as np
+import inspect
+import traceback
 
 '''
 Calculate sum of log probabilities for two values/arrays
@@ -11,12 +13,19 @@ def sumLogProbs(a, b):
     " function for calculating sumLogProbs for two values/arrays (vectorized)"
     b_a = np.expand_dims(a+np.log(1+np.exp(b-a)), axis=0)
     a_b = np.expand_dims(b+np.log(1+np.exp(a-b)), axis=0)
+    curframe = inspect.currentframe()
+    calframe = inspect.getouterframes(curframe, 2)
+    if np.isnan(np.sum(b_a)) or np.isnan(np.sum(a_b)):
+        print(a)
+        print(b)
+        print('caller name:', calframe[2][3])
+        traceback.print_stack()
     return np.squeeze(np.amax(np.concatenate((b_a, a_b), axis=0), axis=0))
 
 '''
 Calculate sum of log probabilities for list of values/arrays
 Arguments:
-    args: list of log probabilities to sum
+    args: list of log probabilities toc sum
 Returns:
 	sum of log probabilities
 '''
@@ -30,6 +39,17 @@ def sumLogProbsFunc(args):
             sumtotal = sumLogProbs(sumtotal, term)
         return sumtotal
 
+def log2norm_dicts(some_dict):
+    for key, n_dict in some_dict.items():
+        for key2, val in n_dict.items():
+            some_dict[key][key2] = np.exp(val)
+
+    return some_dict
+        
+
+    
+
+
 '''
 Return observations for all parents at specified time 
 Arguments:
@@ -41,8 +61,8 @@ Returns:
 	parent observations
 '''
 def get_parent_obs(current_gene, timeseries, parents, time):
-    if not parents:
-        parents = [current_gene]
+    # if not parents:
+    #     parents = [current_gene]
     parent_obs = str([timeseries.get(parent)[time] for parent in parents])
     return parent_obs
 
@@ -52,7 +72,7 @@ Arguments:
 	obs [tuple]: observed sequence of emitted states for gene_i, timeseries dictionary 
 	probs [tuple]: initial, emission, transition probability dicts
 Returns:
-	F [float]: matrix of forward probabilities
+	F [float]: matrix of forward  probabilities
 	B [float]: matrix of backward probabilities
 	R [float]: matrix of posterior probabilities
     likelihood_f [float]: P(obs) calculated using the forward algorithm
@@ -85,6 +105,12 @@ def forward_backward(child_gene, obs, states, probs):
                     F_list.append(F[prev_q,i-1] + trans_probs[prev_q][q])
                     B_list.append(trans_probs[q][prev_q] + emiss_probs[prev_q][current_obs[T-i]][back_parent_obs] + B[prev_q, T-i])
                 F_sum_term = sumLogProbsFunc(F_list)
+                if np.isnan(F_sum_term):
+                    print(F)
+                    print(log2norm_dicts(trans_probs))
+                    print(emiss_probs)
+                    print(F_list)
+                    exit()
                 F[q, i] = emiss_probs[q][current_obs[i]][for_parent_obs] + F_sum_term
                 B[q, T-i-1] = sumLogProbsFunc(B_list)
     

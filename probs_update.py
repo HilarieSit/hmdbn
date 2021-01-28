@@ -25,12 +25,9 @@ def initialize_prob_dicts(state_emiss, ri, T, n_seg):
     Ri = len(ri)
     n_configs = len(state_emiss)
     pi_init = np.log(1/n_configs)
-    if n_seg is None:
-        trans_prob_init = np.log(0.05)
-        self_prob_init = np.log(0.95)
-    else:
-        trans_prob_init = np.log(1/10)
-        self_prob_init = np.log(1-(n_seg/10))
+
+    trans_prob_init = np.log(1/65)
+    self_prob_init = np.log(1-(n_seg/65))
 
     for state_id, combinations in enumerate(state_emiss):
         init_probs[state_id] = pi_init
@@ -44,7 +41,7 @@ def initialize_prob_dicts(state_emiss, ri, T, n_seg):
         for gene_emiss in range(Ri):
             for parent_emiss in combinations:
                 emiss_probs[state_id][gene_emiss][str(parent_emiss)] = 0  
-                    
+
     return trans_probs, emiss_probs, init_probs
 
 '''
@@ -83,6 +80,10 @@ def update_probs(current_gene, obs, states, probs, F, B, P, f_likelihood):
                 
                 # calculate numerator 
                 A_count = F[prev_q,t-1]+trans_probs[prev_q][q]+emiss_probs[q][current_obs[t]][back_parent_obs]+B[q,t]-f_likelihood
+
+                if np.isnan(np.sum(F)):
+                    print(F)
+                    print(f_likelihood)
                 
                 if t == 0:
                     A_num[prev_q][q] = A_count
@@ -97,7 +98,10 @@ def update_probs(current_gene, obs, states, probs, F, B, P, f_likelihood):
 
         # calculate transition probability
         for q2 in range(len(states)):
-            trans_probs[prev_q][q2] = A_num[prev_q][q2]-A_denom
+            prob = A_num[prev_q][q2]-A_denom
+            if np.isnan(prob):
+                prob = 1
+            trans_probs[prev_q][q2] = prob
 
     return init_probs, trans_probs
 
@@ -149,25 +153,35 @@ def calculate_theta(current_gene, obs, states, state_emiss, chi_dicts, emiss_pro
         # fill in emiss_probs
         for gene_emiss in range(Ri):
             for parent_emiss in combinations:
-                emiss_probs[state_id][gene_emiss][str(parent_emiss)] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]-np.log(len(combinations))
+                # emiss_probs[state_id][gene_emiss][str(parent_emiss)] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]-np.log(len(combinations))
+                emiss_probs[state_id][gene_emiss][str(parent_emiss)] = theta_matrix[gene_emiss, chi_dict.get(str(parent_emiss))]+np.log(0.5)
                 if emiss_probs[state_id][gene_emiss][str(parent_emiss)] == -inf:
                     emiss_probs[state_id][gene_emiss][str(parent_emiss)] = 1
 
-        bwbic_first_term = np.zeros((Ri, Gi))
+        # bwbic_first_term = np.zeros((Ri, Gi))
+        # for t in range(T): 
+        #     # from current_val & parent_vals, identify where to put count in chi (knonecker delta)
+        #     current_val = current_obs[t]
+        #     parent_vals = get_parent_obs(current_gene, timeseries, s_parents, t)
+        #     chi_index = chi_dict.get(str(parent_vals))
+        #     bwbic_first_term[current_val, chi_index] += P[state_id, t] * theta_matrix[current_val, chi_index]
+        
+        # bwbic_first_term = np.sum(bwbic_first_term)
+        # bwbic_second_term = (Gi/2)*(Ri-1)*np.log(np.sum(P[state_id,:]))
+        # bwbic = bwbic_first_term-bwbic_second_term
+        # bwbic_score.append(bwbic)
+
+        bwbic_first_term = 0
         for t in range(T): 
             # from current_val & parent_vals, identify where to put count in chi (knonecker delta)
             current_val = current_obs[t]
             parent_vals = get_parent_obs(current_gene, timeseries, s_parents, t)
             chi_index = chi_dict.get(str(parent_vals))
-            bwbic_first_term[current_val, chi_index] += P[state_id, t] * theta_matrix[current_val, chi_index]
+            bwbic_first_term += P[state_id, t] * theta_matrix[current_val, chi_index]
         
-        bwbic_first_term = np.sum(bwbic_first_term)
         bwbic_second_term = (Gi/2)*(Ri-1)*np.log(np.sum(P[state_id,:]))
         bwbic = bwbic_first_term-bwbic_second_term
         bwbic_score.append(bwbic)
-    print([state.parents for state in states])
+    bwbic_score = np.sum(bwbic_score)
     print(bwbic_score)
-    bwbic_score = np.mean(bwbic_score)
     return theta_cond, emiss_probs, bwbic_score
-
-# def calculate_bwbic(theta_cond, chi_dict, timeseries, config):
