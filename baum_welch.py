@@ -1,6 +1,4 @@
 import numpy as np
-import inspect
-import traceback
 
 '''
 Calculate sum of log probabilities for two values/arrays
@@ -13,13 +11,9 @@ def sumLogProbs(a, b):
     " function for calculating sumLogProbs for two values/arrays (vectorized)"
     b_a = np.expand_dims(a+np.log(1+np.exp(b-a)), axis=0)
     a_b = np.expand_dims(b+np.log(1+np.exp(a-b)), axis=0)
-    curframe = inspect.currentframe()
-    calframe = inspect.getouterframes(curframe, 2)
-    if np.isnan(np.sum(b_a)) or np.isnan(np.sum(a_b)):
-        print(a)
-        print(b)
-        print('caller name:', calframe[2][3])
-        traceback.print_stack()
+    b_a[np.where(b_a == np.inf)] = np.NINF
+    a_b[np.where(a_b == np.inf)] = np.NINF
+    sumlogprob = np.squeeze(np.amax(np.concatenate((b_a, a_b), axis=0), axis=0))
     return np.squeeze(np.amax(np.concatenate((b_a, a_b), axis=0), axis=0))
 
 '''
@@ -39,17 +33,6 @@ def sumLogProbsFunc(args):
             sumtotal = sumLogProbs(sumtotal, term)
         return sumtotal
 
-def log2norm_dicts(some_dict):
-    for key, n_dict in some_dict.items():
-        for key2, val in n_dict.items():
-            some_dict[key][key2] = np.exp(val)
-
-    return some_dict
-        
-
-    
-
-
 '''
 Return observations for all parents at specified time 
 Arguments:
@@ -61,8 +44,6 @@ Returns:
 	parent observations
 '''
 def get_parent_obs(current_gene, timeseries, parents, time):
-    # if not parents:
-    #     parents = [current_gene]
     parent_obs = str([timeseries.get(parent)[time] for parent in parents])
     return parent_obs
 
@@ -86,7 +67,7 @@ def forward_backward(child_gene, obs, states, probs):
 
     F = np.zeros([n_states, T])
     B = np.zeros([n_states, T])  # takes care intializing last row as log(1)
-
+    
     for i in range(T):
         for q, state2 in enumerate(states):
             s2_parents = state2.parents
@@ -101,23 +82,16 @@ def forward_backward(child_gene, obs, states, probs):
                 for prev_q, state in enumerate(states):
                     s_parents = state.parents
                     back_parent_obs = get_parent_obs(child_gene, timeseries, s_parents, T-i)
-                    
                     F_list.append(F[prev_q,i-1] + trans_probs[prev_q][q])
                     B_list.append(trans_probs[q][prev_q] + emiss_probs[prev_q][current_obs[T-i]][back_parent_obs] + B[prev_q, T-i])
                 F_sum_term = sumLogProbsFunc(F_list)
-                if np.isnan(F_sum_term):
-                    print(F)
-                    print(log2norm_dicts(trans_probs))
-                    print(emiss_probs)
-                    print(F_list)
-                    exit()
                 F[q, i] = emiss_probs[q][current_obs[i]][for_parent_obs] + F_sum_term
                 B[q, T-i-1] = sumLogProbsFunc(B_list)
     
     # calculate the posterior
     numerator = F + B
     n, T = numerator.shape
-    denominator = sumLogProbsFunc(np.vsplit(numerator, n))
+    denominator = np.tile(sumLogProbsFunc(np.vsplit(numerator, n)), (n, 1))
     R = np.exp(numerator - denominator)
 
     likelihood_f = sumLogProbsFunc(np.hsplit(F[:,-1], n))
