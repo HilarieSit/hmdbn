@@ -1,17 +1,32 @@
 import numpy as np
 import pickle
 
+'''
+Load data from pkl file
+Arguments:
+    genes [list]: all genes of interest
+    filepath [str]: location of data file
+Returns:
+    timeseries [dict]: observations corresponding to gene key
+'''
 def load_data(genes, filepath):
     try: 
         filename = open(filepath+".pkl", "rb")
-        timeseries_dict = pickle.load(filename)
+        timeseries = pickle.load(filename)
     except:
-        timeseries_dict = process_raw_data(genes)
+        timeseries = process_raw_data(genes)
         filename = open(filepath+".pkl", "wb")
-        pickle.dump(timeseries_dict, filename)
+        pickle.dump(timeseries, filename)
     filename.close()
-    return timeseries_dict
+    return timeseries
 
+'''
+Read and process raw samples into binary timeseries for genes of interest
+Arguments:
+    genes [list]: all genes of interest
+Returns:
+    timeseries [dict]: observations corresponding to gene key
+'''
 def process_raw_data(genes):
     import GEOparse
     import pandas as pd
@@ -27,7 +42,7 @@ def process_raw_data(genes):
         name = gse.gsms[sample].metadata.get('source_name_ch2')[0]
         
         # find the samples to remove (second replicate and males)
-        removal_criteria = ['N=2', '_male_', '0-24h', '105h_female']
+        removal_criteria = ['N=2', '_female_', '0-24h', '105h_male']
         if any(x in name for x in removal_criteria):
             removed_samples.append(sample)
 
@@ -49,7 +64,7 @@ def process_raw_data(genes):
         gse.gsms.pop(sample)
 
     # extract ratio data for genes of interest
-    all_ratios = gse.pivot_samples('Ratio_of_Means')
+    all_ratios = gse.pivot_samples('Median_of_Ratios')
     ratios = all_ratios.loc[list(genes.values())]
     genes_list = list(ratios.index.values)
 
@@ -63,13 +78,20 @@ def process_raw_data(genes):
     binary_timeseries = binary_conversion(ratios_timeseries)
 
     # make dictionary of timeseries
-    timeseries_dict = {}
+    timeseries = {}
     int2gene = dict(zip(genes.values(), genes.keys()))
     for i, gene_id in enumerate(genes_list):
-        timeseries_dict[int2gene.get(gene_id)] = binary_timeseries[i]
+        timeseries[int2gene.get(gene_id)] = binary_timeseries[i]
 
-    return timeseries_dict
+    return timeseries
 
+'''
+Convert timeseries of ratios into timeseries of binary values
+Arguments:
+    ratios_timeseries [list]: timeseries of ratios
+Returns:
+    binary_timeseries [list]: processed binary timeseries
+'''
 def binary_conversion(ratios_timeseries):
     binary_timeseries = []
     for obs in ratios_timeseries:
@@ -77,31 +99,36 @@ def binary_conversion(ratios_timeseries):
         obs = obs[0]
         sorted_ind = np.argsort(obs)
         sorted_obs = obs[sorted_ind]
-        # find dynamic range (discard lowest & highest two observations)
-        lowest = sorted_obs[2]
-        highest = sorted_obs[-3]
-        mean = (highest-lowest)/2
-        # median = np.median(sorted_obs[2:-3])
-        # convert to binary based on dynamic range
-        binary_timeseries.append(np.where(obs>mean, 1, 0))
+        # find median in dynamic range (discard lowest & highest two observations)
+        median = np.median(sorted_obs[2:-3])
+        # convert to binary
+        binary_timeseries.append(np.where(obs>median, 1, 0))
     return binary_timeseries
 
+'''
+Get dataset by name
+Arguments:
+    dataset_name [str]: name of dataset
+Returns:
+    timeseries [dict]: observations corresponding to gene key
+'''
+def get_dataset(dataset_name):
+    if dataset_name == 'small_drosophlia':
+        gene_id = {
+            'eve': 12294,
+            'lmd': 9244,
+            'twi': 12573,
+            'mlc-c': 10147,
+            'mhc1': 4693,
+            'prm': 4385,
+            'actn': 8237,
+            '140up': 6990,
+            '128up': 10898,
+            'msp300': 11654}
 
-if __name__ == '__main__':
-    # Just for testing
-    # genes of interest, manually searched for IDs
-    genes = {
-        'eve': 12294,
-        'gfl/lmd': 9244,
-        'twi': 12573,
-        # 'mlc1': 10147,
-        'mhc1': 4693,
-        'prm': 4385,
-        'actn': 8237,
-        '128up': 10898,
-        '140up': 6990,
-        # 'myo61f': 2013,
-        'msp300': 11654}
-
-    timeseries_dict = load_data(genes, "data/testing")
-    print(timeseries_dict)
+        # load all data
+        all_genes = list(gene_id.keys())
+        timeseries = load_data(gene_id, 'data/testing')
+        return timeseries
+    else:
+        raise Exception("Dataset not defined")

@@ -1,48 +1,36 @@
 import numpy as np
 import collections
 import itertools
+from itertools import repeat
 import copy
 import random
 import pickle
 import time
 import os
-import multiprocessing
 from matplotlib import pyplot as plt
 from concurrent.futures import ProcessPoolExecutor
 
-from data_processing import load_data
+from data_processing import *
 from hmdbn import * 
 from baum_welch import *
 from probs_update import *
 from visualization import *
 
-'''
-Create a node library with genes of interest
-Arguments:
-    genes [list]: all genes of interest
-Returns:
-    node_lib [dict]: nodes corresponding to gene key
-'''
-def initialize_hmdbns(genes):
-    hmdbn_lib = {}
-    for gene in genes:
-        hmdbn_lib[gene] = hmdbn(gene)
-    return hmdbn_lib
+# seed for reproducability
+random.seed(0)
 
-def initialize_hmdbns2(genes):
-    hmdbn_list = []
-    for gene in genes:
-        hmdbn_list.append(hmdbn(gene))
-    return hmdbn_list
+# suppress overflow warnings that are resolved later
+import warnings
+warnings.filterwarnings("ignore")
 
 '''
 Identify all possible parent emissions given state
 Arguments:
-    state [node]: node_i
+    state [state]: current state
     ri [int]: possible emissions of genes - i.e. (0, 1)
 Returns:
     combinations [list]: list of possible parent emissions for state
-    chi_dict [dict]: tracking parent emissions with int
+    chi_dict [dict]: tracking parent emissions with integer
 '''
 def identify_parent_emissions(state, ri):
     state_parents = state.parents
@@ -69,7 +57,7 @@ def identify_transitions(P_list, T):
     for P in P_list:
         # keep track of the previous parent expression (position 0)
         prev_val = np.around(P[0,0], 0)
-        # if change past 0.5 probability
+        # if past 0.5 probability, add time
         for t in range(T):
             next_val = np.around(P[0,t], 0)
             if prev_val != next_val:
@@ -77,7 +65,7 @@ def identify_transitions(P_list, T):
                 prev_val = next_val
         times.append(T)
 
-    transition_times = np.sort(np.unique(times))    
+    transition_times = np.sort(np.unique(times))        # sorted transition times
     n_seg = len(transition_times)                       # number of segments
     return transition_times, n_seg
 
@@ -92,7 +80,7 @@ Returns:
     P [float]: posterior distribution matrix
     n_seg [int]: number of segments (state transitions)
 '''
-def identify_states(node_parents, P_list, T):
+def identify_states(node_parents, P_list, T, plot=False):
     # identify transition points in timeseries
     transition_times, n_seg = identify_transitions(P_list, T)
 
@@ -116,7 +104,7 @@ def identify_states(node_parents, P_list, T):
     # initialize P matrix
     P = np.ones([len(states), T])
     pt = 0
-    for state_id, state in enumerate(states):
+    for state_id, state in enumerate(states): 
         for i, sP in enumerate(P_list):
             parent = node_parents[i]
             if parent in state:
@@ -124,19 +112,19 @@ def identify_states(node_parents, P_list, T):
             else:
                 P[state_id, :] *= sP[1, :]
 
-        # normalize P so that it sums to 1
+    # normalize P so that sum of all curves = 1 at every t
     P_denom = np.tile(np.sum(P, axis=0), (len(states), 1))
     P = P/P_denom
-    # plot_puntative_graphs2(node_parents, P_list, states, P)
+    if plot == True:
+        plot_puntative_graphs(node_parents, P_list, states, P)
     return states, P, n_seg
 
 '''
 Identify possible states and parent emissions from stationary graph
 Arguments:
     timeseries [dict]: observations corresponding to gene key
-    node_i [node]: node corresponding to gene_i
-    node_lib [dict]: nodes corresponding to gene key
-    init_posteriors [optional, dict]: posterior distributions corresponding to parent gene key
+    hmdbn_i [hmdbn]: hmdbn corresponding to gene_i
+    init_hmdbns [dict]: hmdbns with single parent node corresponding to parent gene key
     T [float]: length of observations
     ri [int]: possible emissions of genes - i.e. (0, 1)
 Returns:
@@ -146,18 +134,17 @@ Returns:
     P [float]: posterior distribution matrix
     n_seg [int]: number of segments (state transitions)
 '''
-def putative_hidden_graphs(timeseries, node_i, init_hmdbns, T, ri):
+def putative_hidden_graphs(timeseries, hmdbn_i, init_hmdbns, T, ri):
     P_list = []
-    child_gene = node_i.gene
-    node_parents = node_i.parents
+    child_gene = hmdbn_i.gene
+    node_parents = hmdbn_i.parents
 
     # get the correct initial posteriors
     P_list = [init_hmdbns[parent].posterior for parent in node_parents]
 
     # identify most probable hidden states using P
     states, state_emiss, chi_dicts = [], [], []
-    possible_parents, P, n_seg = identify_states(node_parents, P_list, T)
-
+    possible_parents, P, n_seg = identify_states(node_parents, P_list, T, plot=True)
     for pparents in possible_parents:
         network = hidden_state(child_gene, pparents)
         parents_emiss, chi_dict = identify_parent_emissions(network, ri)
@@ -170,47 +157,46 @@ def putative_hidden_graphs(timeseries, node_i, init_hmdbns, T, ri):
 '''
 Pre-initialization: calculate posteriors and BWBIC score for every possible parent gene of gene_i
 Arguments:
-    current_gene [str]: name of gene_i
-    node_lib [dict]: nodes corresponding to gene key
+    child_gene [str]: name of gene_i
     timeseries [dict]: observations corresponding to gene key
-    filepath [str]: path to saved posteriors
+    ri [list]: possible emissions of genes - i.e. (0, 1)
+    filepath [str]: path to saved hmdbns
 Returns:
-    node_i [node]: node corresponding to gene_i
-    init_posteriors [dict]: posterior distributions corresponding to parent gene key
+    init_hmdbns [dict]: hmdbns with single parent node corresponding to parent gene key
 '''
-def pre_initialization(current_gene, timeseries, ri, filepath):
+def pre_initialization(child_gene, timeseries, ri, filepath):
     # calculate posterior for every possible parent gene 
-    filename = filepath+current_gene+'.pkl'
+    filename = filepath+child_gene+'.pkl'
 
     init_hmdbns = {}
     for p_gene in timeseries.keys():
-        if p_gene != current_gene:
+        if p_gene != child_gene:
             try:
-                hmdbn_ij = load_model('preinit/', hidden_state(current_gene, [p_gene]))
+                hmdbn_ij = load_model('models/preinitialization/', hidden_state(child_gene, [p_gene]))
             except:
-                hmdbn_ij = hmdbn(current_gene, [p_gene])
+                hmdbn_ij = hmdbn(child_gene, [p_gene])
                 hmdbn_ij = hidden_markov_EM(timeseries, hmdbn_ij, ri, initialization=True)
-                hmdbn_ij.save_model('preinit/')
+                hmdbn_ij.save_model('models/preinitialization/')
             
             init_hmdbns[p_gene] = hmdbn_ij
     
     return init_hmdbns
 
 '''
-Perform structural expectation maximization on gene_i to find HMDBN_i
+Perform structural expectation maximization to update HMDBN_i parameters
 Arguments:
     timeseries [dict]: observations corresponding to gene key
-    node_i [node]: node corresponding to gene_i
-    node_lib [dict]: nodes corresponding to gene key
-    init_posteriors [optional, dict]: posterior distributions corresponding to parent gene key
+    hmdbn_i [hmdbn]: hmdbn corresponding to gene_i
+    ri [list]: possible emissions of genes - i.e. (0, 1)
+    init_hmdbns [optional, dict]: hmdbns with single parent node corresponding to parent gene key
     intialization [optional, bool]: true if called by pre_initialization 
+    delta [optional, float]: tolerance for convergence
 Returns:
-    P [float]: posterior distribution matrix
-    bwbic_score [float]: BWBIC score for final HMDBN_i
+    hmdbn_i [hmdbn]: updated hmdbn corresponding to gene_i
 '''
 def hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns=None, initialization=False, delta=1e-3):
     child_gene = hmdbn_i.gene
-    child_obs = timeseries.get(child_gene)[1:]
+    child_obs = timeseries.get(child_gene)[1:]              # align with i-1 parent observation
 
     T = len(child_obs)
     obs = (child_obs, timeseries)
@@ -234,10 +220,6 @@ def hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns=None, initialization=F
         n_seg = 1
 
     ### set initial values for P(q|x,HMDBN), A, pi, theta, E
-    if len(state_emiss) == 0:
-        print(hmdbn_i.gene)
-        print(hmdbn_i.parents)
-        print([state.parents for state in states])
     trans_probs, emiss_probs, init_probs = initialize_prob_dicts(state_emiss, ri, T, n_seg)
     _, emiss_probs = calculate_theta(child_gene, obs, states, state_emiss, chi_dicts, emiss_probs, P)
     probs = (trans_probs, emiss_probs, init_probs)
@@ -266,18 +248,37 @@ def hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns=None, initialization=F
             prev_probs, prev_theta_cond, prev_P = probs, theta_cond, P
     
     # update the hmdbn parameters
-    if prev_theta_cond is not None:
-        hmdbn_i.bwbic = calculate_bwbic(child_gene, timeseries, states, chi_dicts, prev_theta_cond, prev_P)
-        trans_probs, emiss_probs, init_probs = prev_probs
-        hmdbn_i.pi, hmdbn_i.A, hmdbn_i.E = dict(init_probs), dict(trans_probs), dict(emiss_probs)
+    # if prev_theta_cond is not None:
+    hmdbn_i.bwbic = calculate_bwbic(child_gene, timeseries, states, chi_dicts, prev_theta_cond, prev_P)
+    trans_probs, emiss_probs, init_probs = prev_probs
+    hmdbn_i.pi, hmdbn_i.A, hmdbn_i.E = dict(init_probs), dict(trans_probs), dict(emiss_probs)
     hmdbn_i.hid_states = [state.parents for state in states]
     hmdbn_i.theta, hmdbn_i.posterior = prev_theta_cond, prev_P
 
     # return updated HMDBN
     return hmdbn_i
 
-def worker(child_gene, c_hmdbn, best_hmdbn):
+    '''
+Perform structural expectation maximization to find best graph structure and HMDBN_i 
+Arguments:
+    child_gene [str]: name of gene_i
+    c_hmdbn [hmdbn]: current hmdbn for gene_i
+    best_hmdbn [hmdbn]: best hmdbn for gene_i
+    genes [list]: list of all genes of interest
+    timeseries [dict]: observations corresponding to gene key
+Returns:
+    c_hmdbn [hmdbn]: current hmdbn for gene_i
+    best_hmdbn [hmdbn]: best hmdbn for gene_i
+    update_count [int]: number of updates to best_hmdbn
+'''
+def worker(child_gene, c_hmdbn, best_hmdbn, genes, timeseries):
     print('-> on gene: '+str(child_gene))
+
+    # get shuffled list of other genes
+    other_parents = copy.deepcopy(genes)
+    other_parents.remove(child_gene)
+    random.shuffle(other_parents)
+
     ri = np.unique([all_obs for all_obs in timeseries.values()])
     init_hmdbns = pre_initialization(child_gene, timeseries, ri, 'data/')
     starting_parents = c_hmdbn.parents
@@ -285,62 +286,84 @@ def worker(child_gene, c_hmdbn, best_hmdbn):
     best_bwbic = starting_bwbic
     hmdbn_i = copy.deepcopy(c_hmdbn)
     update_count = 0
-    
-    for parent in all_genes:
-        if child_gene != parent:
-            if parent not in hmdbn_i.parents:
-                hmdbn_i.parents.append(parent)
 
-                if len(hmdbn_i.parents) == 1:
-                    hmdbn_i = copy.deepcopy(init_hmdbns[parent])
-                else:
-                    hmdbn_i = hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns, initialization=False)
-                
-                if hmdbn_i.bwbic > best_bwbic and hmdbn_i.bwbic is not None:                    
+    for parent in other_parents:
+        # if parent is not currently in list of parents, add it and see if BWBIC increases
+        if parent not in hmdbn_i.parents:
+            hmdbn_i.parents.append(parent)
+
+            if len(hmdbn_i.parents) == 1:
+                hmdbn_i = copy.deepcopy(init_hmdbns[parent])
+            else:
+                hmdbn_i = hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns, initialization=False)
+            
+            # set this hmdbn as best hmdbn if BWBIC is higher
+            if hmdbn_i.bwbic > best_bwbic and hmdbn_i.bwbic is not None:                    
+                best_hmdbn = copy.deepcopy(hmdbn_i)
+                best_bwbic = best_hmdbn.bwbic
+                update_count += 1
+            else: 
+                hmdbn_i.parents.remove(parent)
+
+        # if parent is in list of parents, remove it and see if BWBIC increases
+        else:
+            if len(hmdbn_i.parents) > 1: 
+                hmdbn_i.parents.remove(parent)
+                hmdbn_i = hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns, initialization=False)
+
+                if hmdbn_i.bwbic > best_bwbic:                   
                     best_hmdbn = copy.deepcopy(hmdbn_i)
                     best_bwbic = best_hmdbn.bwbic
                     update_count += 1
                 else: 
-                    hmdbn_i.parents.remove(parent)
+                    hmdbn_i.parents.append(parent)
 
-            else:
-                if len(hmdbn_i.parents) > 1: 
-                    hmdbn_i.parents.remove(parent)
+            else: # if there is only one parent, swap out parent and see if BWBIC increases
+                hmdbn_i.parents.remove(parent)
+                swapped_gene = random.choice(other_parents)
+                hmdbn_i.parents.append(swapped_gene)
+                hmdbn_i = hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns, initialization=False)
 
-                    if len(hmdbn_i.parents) == 1:
-                        hmdbn_i = copy.deepcopy(init_hmdbns[hmdbn_i.parents[0]])
-                    else:
-                        hmdbn_i = hidden_markov_EM(timeseries, hmdbn_i, ri, init_hmdbns, initialization=False)
-
-                    if hmdbn_i.bwbic > best_bwbic:                   
-                        best_hmdbn = copy.deepcopy(hmdbn_i)
-                        best_bwbic = best_hmdbn.bwbic
-                        update_count += 1
-                    else: 
-                        hmdbn_i.parents.append(parent)
+                if hmdbn_i.bwbic > best_bwbic:                   
+                    best_hmdbn = copy.deepcopy(hmdbn_i)
+                    best_bwbic = best_hmdbn.bwbic
+                    update_count += 1
+                else: 
+                    hmdbn_i.parents.append(parent)
+                    hmdbn_i.parents.remove(swapped_gene)
 
     output = '-> done with '+str(child_gene)+ ' (' + str(update_count) +' updates) \n updated parents '+str(best_hmdbn.parents)+' from '+ str(starting_parents) + '\n updated bwbic '+ str(best_bwbic) + ' from '+str(starting_bwbic)
             
     print(output)
     return (hmdbn_i, best_hmdbn, update_count)
-    
 
-def run_structural_EM(timeseries, grn=None, temp_grn=None):
+'''
+Run structural expectation maximization by calling worker function in parallel
+Arguments:
+    timeseries [dict]: observations corresponding to gene key
+    c_hmdbns [optional, list]: current hmdbns for all genes (to resume training)
+    best_hmdbns [optional, list]: best hmdbns for all genes (to resume training)
+Returns:
+    best_hmdbns [list]: best hmdbns for all genes
+'''    
+def run_structural_EM(timeseries, best_hmdbns=None, c_hmdbns=None):
     genes = list(timeseries.keys())
+
     # if not using a saved model, initialize
-    if grn is None and temp_grn is None:
+    if best_hmdbns is None and c_hmdbns is None:
         c_hmdbns, best_hmdbns = [], []
         for gene in genes:
-            c_hmdbns.append(hmdbn(gene))                 # keep track of best hmdbn for each gene
-            best_hmdbns.append(hmdbn(gene, bwbic=calculate_bwbic(gene, timeseries)))             # keep track of current hmdbn 
+            c_hmdbns.append(hmdbn(gene))                                                                               # keep track of current hmdbns
+            best_hmdbns.append(hmdbn(gene, parents='no parents', bwbic=calculate_bwbic(gene, timeseries)))             # keep track of best hmdbns (initialize bwbic score with no parents)
 
     convergence = False
     iters = 0
 
     while not convergence:
+        # run worker function in parallel
         print('\n\033[1mCURRENT ITERATION: '+str(iters)+'\033[0m')
         with ProcessPoolExecutor() as executor:
-            results = executor.map(worker, genes, c_hmdbns, best_hmdbns)
+            results = executor.map(worker, genes, c_hmdbns, best_hmdbns, repeat(genes), repeat(timeseries))
         
         c_hmdbns, best_hmdbns, update_count = [], [], 0
         for result in list(results):
@@ -348,9 +371,10 @@ def run_structural_EM(timeseries, grn=None, temp_grn=None):
             best_hmdbns.append(result[1])
             update_count += result[2]
 
-        save_grn2(c_hmdbns, 'models/iteration'+str(iters)+'/temp_grn/')
-        save_grn2(best_hmdbns, 'models/iteration'+str(iters)+'/grn/')
+        save_hmdbns(c_hmdbns, 'models/iteration_'+str(iters)+'/temp_hmdbns/')
+        save_hmdbns(best_hmdbns, 'models/iteration_'+str(iters)+'/hmdbns/')
 
+        # if no changes, end algorithm
         if update_count == 0:
             convergence = True
 
@@ -358,20 +382,8 @@ def run_structural_EM(timeseries, grn=None, temp_grn=None):
             
     return best_hmdbns
 
-
 if __name__ == "__main__":
-    gene_id = {
-    'eve': 12294,
-    'gfl': 9244,
-    'twi': 12573,
-    'mlc1': 10147,
-    'mhc': 4693,
-    'prm': 4385,
-    'actn': 8237,
-    'up': 6990,
-    'msp300': 11654}
-
-    # load all data
-    all_genes = list(gene_id.keys())
-    timeseries = load_data(gene_id, 'data/testing')
+    timeseries = get_dataset('small_drosophlia')
     best_hmdbns = run_structural_EM(timeseries)
+    save_hmdbns(best_hmdbns, 'models/final_hmdbns/')
+    plot_posteriors(load_hmdbns('models/final_hmdbns/'))
