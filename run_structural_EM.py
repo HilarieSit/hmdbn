@@ -144,7 +144,7 @@ def putative_hidden_graphs(timeseries, hmdbn_i, init_hmdbns, T, ri):
 
     # identify most probable hidden states using P
     states, state_emiss, chi_dicts = [], [], []
-    possible_parents, P, n_seg = identify_states(node_parents, P_list, T, plot=True)
+    possible_parents, P, n_seg = identify_states(node_parents, P_list, T)
     for pparents in possible_parents:
         network = hidden_state(child_gene, pparents)
         parents_emiss, chi_dict = identify_parent_emissions(network, ri)
